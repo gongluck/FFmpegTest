@@ -14,6 +14,7 @@ extern "C"
 #include "libavcodec/avcodec.h"
 #include "libavformat/avformat.h"
 #include "libswscale/swscale.h"
+#include "libswresample/swresample.h"
 #include "libavdevice/avdevice.h"
 }
 
@@ -30,6 +31,7 @@ extern "C"
 #define OUTVIDEO "video.yuv"
 #define OUTAUDIO "audio.pcm"
 #define OUTRGB "video.rgb"
+#define OUTS16 "audios16.pcm"
 
 int main()
 {
@@ -40,6 +42,7 @@ int main()
 	FILE* fp_video = fopen(OUTVIDEO, "wb+");
 	FILE* fp_audio = fopen(OUTAUDIO, "wb+");
 	FILE* fp_rgb = fopen(OUTRGB, "wb+");
+	FILE* fp_s16 = fopen(OUTS16, "wb+");
 
 	//初始化FFMPEG  调用了这个才能正常适用编码器和解码器
 	av_register_all();
@@ -119,6 +122,11 @@ int main()
 	avpicture_alloc((AVPicture *)&rgbFrame, PIX_FMT_RGB24, pVCodecCtx->width, pVCodecCtx->height);//为rgbFrame的data分配内存，不用自己分配
 	SwsContext *img_convert_ctx = sws_getContext(pVCodecCtx->width, pVCodecCtx->height, AV_PIX_FMT_YUV420P, pVCodecCtx->width, pVCodecCtx->height, PIX_FMT_RGB24, SWS_FAST_BILINEAR, NULL, NULL, NULL);//转换上下文
 
+	struct SwrContext* swr_covert_ctx = swr_alloc_set_opts(NULL, av_get_default_channel_layout(pACodecCtx->channels), AV_SAMPLE_FMT_S16, pACodecCtx->sample_rate, av_get_default_channel_layout(pACodecCtx->channels), pACodecCtx->sample_fmt, pACodecCtx->sample_rate, 0, NULL);//转换上下文
+	swr_init(swr_covert_ctx);//初始化上下文
+	int samplessize = av_samples_get_buffer_size(NULL, pACodecCtx->channels, pACodecCtx->sample_rate, AV_SAMPLE_FMT_S16, 1);//计算1s的数据大小，使缓冲区足够大
+	uint8_t* sambuf = (uint8_t*)av_mallocz(samplessize);
+
 	while (1)
 	{
 		//读取视频帧
@@ -181,6 +189,9 @@ int main()
 							fwrite(Frame.data[j] + i, 4, 1, fp_audio);
 					}
 				}
+
+				int samplenums = swr_convert(swr_covert_ctx, &sambuf, samplessize, (const uint8_t **)Frame.data, Frame.nb_samples);//转换，返回每个通道的样本数
+				fwrite(sambuf, av_samples_get_buffer_size(NULL, Frame.channels, samplenums, AV_SAMPLE_FMT_S16, 1), 1, fp_s16);
 			}
 		}
 		av_free_packet(&packet);//清除packet里面指向的缓冲区
@@ -189,7 +200,10 @@ int main()
 	fclose(fp_video);
 	fclose(fp_audio);
 	fclose(fp_rgb);
+	fclose(fp_s16);
 	avpicture_free((AVPicture*)&rgbFrame);//释放avpicture_alloc分配的内存
+	swr_free(&swr_covert_ctx);//释放swr_alloc_set_opts分配的转换上下文
+	av_free(sambuf);
 	avcodec_close(pVCodecCtx);//关闭解码器
 	avcodec_close(pACodecCtx);
 	avformat_close_input(&pFormatCtx);//关闭输入视频文件。avformat_free_context(pFormatCtx);就不需要了
