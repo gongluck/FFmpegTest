@@ -26,9 +26,10 @@ extern "C"
 #pragma comment(lib, "swresample.lib")
 #pragma comment(lib, "swscale.lib")
 
-#define INPUT "in.mkv"
+#define INPUT "in.flv"
 #define OUTVIDEO "video.yuv"
 #define OUTAUDIO "audio.pcm"
+#define OUTRGB "video.rgb"
 
 int main()
 {
@@ -38,6 +39,7 @@ int main()
 	char errBuf[BUFSIZ] = { 0 };
 	FILE* fp_video = fopen(OUTVIDEO, "wb+");
 	FILE* fp_audio = fopen(OUTAUDIO, "wb+");
+	FILE* fp_rgb = fopen(OUTRGB, "wb+");
 
 	//初始化FFMPEG  调用了这个才能正常适用编码器和解码器
 	av_register_all();
@@ -107,8 +109,16 @@ int main()
 	}
 
 	AVFrame Frame = { 0 };//不初始化，avcodec_decode_video2会报错
+	AVFrame rgbFrame;
 	AVPacket packet;
 	int got_picture;
+
+	int rgbsize = avpicture_get_size(PIX_FMT_RGB24, pVCodecCtx->width, pVCodecCtx->height);//算出该格式和分辨率下一帧图像的数据大小
+	//uint8_t* rgbBuffer = (uint8_t *)av_malloc(rgbsize * sizeof(uint8_t));//分配保存图像的内存
+	//avpicture_fill((AVPicture *)&rgbFrame, rgbBuffer, PIX_FMT_RGB24, pVCodecCtx->width, pVCodecCtx->height);//将自己分配的内存绑定到rgbFrame的data数据区
+	avpicture_alloc((AVPicture *)&rgbFrame, PIX_FMT_RGB24, pVCodecCtx->width, pVCodecCtx->height);//为rgbFrame的data分配内存，不用自己分配
+	SwsContext *img_convert_ctx = sws_getContext(pVCodecCtx->width, pVCodecCtx->height, AV_PIX_FMT_YUV420P, pVCodecCtx->width, pVCodecCtx->height, PIX_FMT_RGB24, SWS_FAST_BILINEAR, NULL, NULL, NULL);//转换上下文
+
 	while (1)
 	{
 		//读取视频帧
@@ -136,6 +146,9 @@ int main()
 					fwrite(Frame.data[0], Frame.linesize[0] * Frame.height, 1, fp_video);
 					fwrite(Frame.data[1], Frame.linesize[1] * Frame.height / 2, 1, fp_video);
 					fwrite(Frame.data[2], Frame.linesize[2] * Frame.height / 2, 1, fp_video);
+
+					sws_scale(img_convert_ctx, (uint8_t const* const *)Frame.data, Frame.linesize, 0, pVCodecCtx->height, rgbFrame.data, rgbFrame.linesize);//转换
+					fwrite(rgbFrame.data[0], rgbsize, 1, fp_rgb);
 				}
 			}
 		}
@@ -175,6 +188,8 @@ int main()
 
 	fclose(fp_video);
 	fclose(fp_audio);
+	fclose(fp_rgb);
+	avpicture_free((AVPicture*)&rgbFrame);//释放avpicture_alloc分配的内存
 	avcodec_close(pVCodecCtx);//关闭解码器
 	avcodec_close(pACodecCtx);
 	avformat_close_input(&pFormatCtx);//关闭输入视频文件。avformat_free_context(pFormatCtx);就不需要了
