@@ -26,15 +26,18 @@ extern "C"
 #pragma comment(lib, "swresample.lib")
 #pragma comment(lib, "swscale.lib")
 
-#define INPUT "in.flv"
-#define OUTPUT "out.yuv"
+#define INPUT "in.mkv"
+#define OUTVIDEO "video.yuv"
+#define OUTAUDIO "audio.pcm"
 
 int main()
 {
 	int res = 0;
 	int videoStream = -1;//标记视频流的编号
+	int audioStream = -1;//标记音频流的编号
 	char errBuf[BUFSIZ] = { 0 };
-	FILE* fp_out = fopen(OUTPUT, "wb+");
+	FILE* fp_video = fopen(OUTVIDEO, "wb+");
+	FILE* fp_audio = fopen(OUTAUDIO, "wb+");
 
 	//初始化FFMPEG  调用了这个才能正常适用编码器和解码器
 	av_register_all();
@@ -61,26 +64,45 @@ int main()
 	{
 		if (pFormatCtx->streams[i]->codec->codec_type == AVMEDIA_TYPE_VIDEO)
 			videoStream = i;
+		else if (pFormatCtx->streams[i]->codec->codec_type == AVMEDIA_TYPE_AUDIO)
+			audioStream = i;
 	}
 	if (videoStream == -1)
 	{
 		printf("Didn't find a video stream.\n");
 		return -1;
 	}
+	if (audioStream == -1)
+	{
+		printf("Didn't find a audio stream.\n");
+		return -1;
+	}
 
 	///查找解码器    
-	AVCodecContext* pCodecCtx = pFormatCtx->streams[videoStream]->codec;
-	AVCodec* pCodec = avcodec_find_decoder(pCodecCtx->codec_id);
-	if (pCodec == NULL)
+	AVCodecContext* pVCodecCtx = pFormatCtx->streams[videoStream]->codec;
+	AVCodec* pVCodec = avcodec_find_decoder(pVCodecCtx->codec_id);
+	if (pVCodec == NULL)
 	{
-		printf("Codec not found.\n");
+		printf("Video Codec not found.\n");
+		return -1;
+	}
+	AVCodecContext* pACodecCtx = pFormatCtx->streams[audioStream]->codec;
+	AVCodec* pACodec = avcodec_find_decoder(pACodecCtx->codec_id);
+	if (pACodec == NULL)
+	{
+		printf("Audio Codec not found.\n");
 		return -1;
 	}
 
 	///打开解码器
-	if (avcodec_open2(pCodecCtx, pCodec, NULL) < 0)
+	if (avcodec_open2(pVCodecCtx, pVCodec, NULL) < 0)
 	{
-		printf("Could not open codec.");
+		printf("Could not open Video codec.\n");
+		return -1;
+	}
+	if (avcodec_open2(pACodecCtx, pACodec, NULL) < 0)
+	{
+		printf("Could not open Audio codec.\n");
 		return -1;
 	}
 
@@ -98,9 +120,9 @@ int main()
 		if (packet.stream_index == videoStream)
 		{
 			//解码视频帧
-			if (avcodec_decode_video2(pCodecCtx, &Frame, &got_picture, &packet) < 0)
+			if (avcodec_decode_video2(pVCodecCtx, &Frame, &got_picture, &packet) < 0)
 			{
-				printf("decode error.\n");
+				printf("decode Video error.\n");
 				return -1;
 			}
 			if (got_picture)
@@ -111,17 +133,50 @@ int main()
 					//但是这些像素值并不是连续存储的，每行有效像素之后存储了一些无效像素。
 					//以亮度Y数据为例，data[0]中一共包含了linesize[0] * height个数据。
 					//但是出于优化等方面的考虑，linesize[0]实际上并不等于宽度width，而是一个比宽度大一些的值。
-					fwrite(Frame.data[0], Frame.linesize[0] * Frame.height, 1, fp_out);
-					fwrite(Frame.data[1], Frame.linesize[1] * Frame.height / 2, 1, fp_out);
-					fwrite(Frame.data[2], Frame.linesize[2] * Frame.height / 2, 1, fp_out);
+					fwrite(Frame.data[0], Frame.linesize[0] * Frame.height, 1, fp_video);
+					fwrite(Frame.data[1], Frame.linesize[1] * Frame.height / 2, 1, fp_video);
+					fwrite(Frame.data[2], Frame.linesize[2] * Frame.height / 2, 1, fp_video);
+				}
+			}
+		}
+		else if (packet.stream_index == audioStream)
+		{
+			//解码音频帧
+			if (avcodec_decode_audio4(pACodecCtx, &Frame, &got_picture, &packet) < 0)
+			{
+				printf("decode Audio error.\n");
+				return -1;
+			}
+			if (got_picture)
+			{
+				if (Frame.format == AV_SAMPLE_FMT_S16P)//signed 16 bits, planar 16位 平面数据
+				{
+					//AV_SAMPLE_FMT_S16P
+					//代表每个data[]的数据是连续的（planar），每个单位是16bits
+					for (int i = 0; i < Frame.linesize[0]; i += 2)
+					{
+						//如果是多通道的话，保存成c1低位、c1高位、c2低位、c2高位...
+						for (int j = 0; j < Frame.channels; ++j)
+							fwrite(Frame.data[j] + i, 2, 1, fp_audio);
+					}
+				}
+				else if (Frame.format == AV_SAMPLE_FMT_FLTP)
+				{
+					for (int i = 0; i < Frame.linesize[0]; i += 4)
+					{
+						for (int j = 0; j < Frame.channels; ++j)
+							fwrite(Frame.data[j] + i, 4, 1, fp_audio);
+					}
 				}
 			}
 		}
 		av_free_packet(&packet);//清除packet里面指向的缓冲区
 	}
 
-	fclose(fp_out);
-	avcodec_close(pCodecCtx);//关闭解码器
+	fclose(fp_video);
+	fclose(fp_audio);
+	avcodec_close(pVCodecCtx);//关闭解码器
+	avcodec_close(pACodecCtx);
 	avformat_close_input(&pFormatCtx);//关闭输入视频文件。avformat_free_context(pFormatCtx);就不需要了
 	return 0;
 }
